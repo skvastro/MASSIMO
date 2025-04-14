@@ -74,10 +74,10 @@ class TelescopeSimulator:
         if not self.config_file.exists():
             self.logger.info(
                 f"Config file not found:\n\t{self.config_file}\n"
-                f"Creating default config, then exiting."
+                f"Creating default config."
             )
             self.make_default_config()
-            sys.exit()
+            # sys.exit()
 
         self.config = ConfigParser(inline_comment_prefixes=("#", ";"))
         self.config.read(self.config_file)

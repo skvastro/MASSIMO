@@ -137,6 +137,7 @@ def edm_sampling(
 
     # Prepare sampling loop.
     imgs = []
+    denoiser_outputs = []
     x_next = latents * sigma_steps[0]  # Generate initial sample at t_0
     imgs.append(x_next.cpu())
 
@@ -164,6 +165,7 @@ def edm_sampling(
             class_labels=label_batch,
             guidance_strength=guidance_strength,
         )
+        denoiser_outputs.append(denoised.cpu().detach())
 
         # Score estimate
         d_cur = (x_cur - denoised) / sigma_cur
@@ -193,7 +195,7 @@ def edm_sampling(
         # Append to list
         imgs.append(x_next.cpu())
 
-    return imgs
+    return imgs, denoiser_outputs
 
 
 def get_sampling_noise_levels(timesteps, sigma_min=2e-3, sigma_max=80, rho=7):

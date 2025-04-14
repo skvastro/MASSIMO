@@ -158,7 +158,7 @@ class Sampler:
         dset_name += "_" * bool(self.settings["comment"]) + self.settings["comment"]
 
         # Get images
-        imgs = self.quick_sample(
+        imgs, denoiser_outputs = self.quick_sample(
             model_name,
             model=model,
             context=context,
@@ -168,6 +168,7 @@ class Sampler:
             distribute_model=distribute_model,
             device_ids=device_ids,
             model_kwargs=model_kwargs,
+            return_denoiser_outputs=True,
             # Settings already updated, no need to pass them again
         )
 
@@ -193,7 +194,7 @@ class Sampler:
             },
         )
 
-        return imgs
+        return imgs, denoiser_outputs
 
     def quick_sample(
         self,
@@ -205,6 +206,7 @@ class Sampler:
         latents=None,
         distribute_model=True,
         device_ids=None,
+        return_denoiser_outputs=False,
         model_kwargs={},
         **settings_kwargs,
     ):
@@ -365,6 +367,7 @@ class Sampler:
 
         # Sampling
         batch_list = []
+        denoiser_output_list = []
         t0 = datetime.datetime.now()
         dt = datetime.timedelta(seconds=0)
         for i in range(n_batches):
@@ -388,7 +391,7 @@ class Sampler:
             self.logger.info(log)
 
             # Now let's get that yummy batch
-            batch = diffusion.edm_sampling(
+            batch, denoiser_outputs = diffusion.edm_sampling(
                 model,
                 context_batch=context[i] if context is not None else None,
                 label_batch=labels[i] if labels is not None else None,
@@ -397,6 +400,7 @@ class Sampler:
                 **solver_settings,
             )
             batch_list.append(batch if self.settings["return_steps"] else batch[-1])
+            denoiser_output_list.append(denoiser_outputs)
 
             # Update time for time logging
             dt = datetime.datetime.now() - t0
@@ -404,7 +408,7 @@ class Sampler:
         # If an extra batch is sampled, append it to the list
         if do_extra_batch:
             self.logger.info(f"Sampling additional batch of size {extra_batch_size}...")
-            batch = diffusion.edm_sampling(
+            batch, denoiser_outputs = diffusion.edm_sampling(
                 model,
                 context_batch=context_extra if context is not None else None,
                 label_batch=labels_extra if labels is not None else None,
@@ -413,6 +417,7 @@ class Sampler:
                 **solver_settings,
             )
             batch_list.append(batch if self.settings["return_steps"] else batch[-1])
+            denoiser_output_list.append(denoiser_outputs)
 
         dt = datetime.datetime.now() - t0
         self.logger.info(f"Sampling complete in {utils.logging.format_timedelta(dt)}.")
@@ -440,11 +445,24 @@ class Sampler:
         # Scale images from [-1, 1] to [0, 1]
         imgs = (imgs + 1) / 2
 
+        # Denoiser output is a list with n_batches entries,
+        # filled with lists with n_steps entries,
+        # filled with tensors of shape (bsize, 1, 80, 80).
+        # We want it as a single tensor of shape (n_batches * bsize = n_samples, n_steps, 1, 80, 80).
+        denoiser_outputs = (
+            torch.concat([torch.stack(b, dim=1) for b in denoiser_output_list])
+            .cpu()
+            .numpy()
+        )
+
         # Release GPU memory
         del model, batch_list
         torch.cuda.empty_cache()
 
         self.logger.info("Sampling complete.")
+
+        if return_denoiser_outputs:
+            return imgs, denoiser_outputs
 
         return imgs
 

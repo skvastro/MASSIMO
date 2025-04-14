@@ -1,8 +1,10 @@
 import ast
+import shutil
 import warnings
+import argparse
 from pathlib import Path
 from configparser import ConfigParser
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import h5py
 import torch
@@ -13,7 +15,6 @@ from tqdm import tqdm
 from astropy.io import fits
 from astropy.table import Table
 from scipy.stats import rv_histogram
-from skimage.draw import disk
 from skimage.transform import resize
 from skimage.measure import regionprops_table
 
@@ -172,6 +173,80 @@ class MapMaker:
 
         mm.logger.info("MapMaker instance read.")
         return mm
+
+    def run(
+        self,
+        *,
+        force_all=False,
+        force_trecs=False,
+        force_map=False,
+        sampler_settings={"n_devices": 2},
+    ):
+        # TODO: This hsould be a function in the MapMaker class, with an option to
+        # force re-run T-RECS. Default should be to check if there is already
+        # a T-RECS catalog, and use it if so.
+
+        # Check for existing T-RECS catalog, possibly prevent override
+        do_trecs = True
+        if (self.trecs_dir / "catalogue_continuum_wrapped.fits").exists():
+            if force_trecs:
+                self.logger.warning(
+                    f"Overriding existing T-RECS catalog {self.trecs_dir / 'catalogue_continuum_wrapped.fits'}."
+                )
+                # Remove trecs folder with all contents
+                shutil.rmtree(self.trecs_dir)
+            else:
+                self.logger.warning(
+                    f"T-RECS catalog already exists - will skip. Use force_trecs=True to override."
+                )
+                do_trecs = False
+
+        # Run T-RECS
+        if do_trecs:
+            self.prepare_TRECS()
+            p = self.run_TRECS()
+            p.wait()
+
+        # Read data
+        self.read_TRECS()
+
+        # Check for existing map files, possibly prevent override
+        map_name = self.map_name
+        out_dir = paths.SKY_MAP_PARENT / map_name
+        if (out_dir / f"{map_name}.h5").exists() or (
+            out_dir / f"{map_name}.fits"
+        ).exists():
+            if force_all or force_map:
+                self.logger.warning(
+                    f"Overriding existing files {map_name}.h5 and {map_name}.fits."
+                )
+            else:
+                self.logger.warning(
+                    f"Map {map_name} already exists. Aborting for safety. Use force_all=True to override."
+                )
+                raise FileExistsError(
+                    f"Map {map_name} already exists. Aborting for safety."
+                )
+
+        # Make map
+        self.make_map()
+
+        # Save map
+        self.save(map_name, override=True)
+
+        # Save chan-dim image
+        self.save_to_fits(chan_dim=True, override=True)
+
+        # Make map-sized mask
+        _, mask_file = self.make_threshold_mask(
+            sensitivity=5e-5, save=True, mask_size="model"
+        )
+
+        # Save masked map
+        self.save_masked_map(mask_file)
+
+        # Make ddf-sized mask
+        self.make_threshold_mask(sensitivity=5e-5, save=True, mask_size="ddf")
 
     def plot_map(self, scale_fn=lambda x: np.tanh(7.5 * x)):
 
@@ -838,66 +913,64 @@ class MapMaker:
         )
 
 
-def run_map_maker(
-    *,
-    map_name,
-    map_size_deg=5,
-    model_name="Prototypes_Model_SizeCond",
-    dset="prototypes",
-    sampler_settings={"n_devices": 2},
-):
-    # TODO: This hsould be a function in the MapMaker class, with an option to
-    # force re-run T-RECS. Default should be to check if there is already
-    # a T-RECS catalog, and use it if so.
-
-    # Check for existing files to prevent override
-    out_dir = paths.SKY_MAP_PARENT / map_name
-    if (out_dir / f"{map_name}.h5").exists() or (out_dir / f"{map_name}.fits").exists():
-        raise FileExistsError(f"Map {map_name} already exists. Aborting for safety.")
-
-    # Initialize MapMaker
-    mm = MapMaker(
-        map_name=map_name,
-        map_size_deg=map_size_deg,
-        model_name=model_name,
-        dset=dset,
-        sampler_settings=sampler_settings,
-        max_flux_Jy=2,
-    )
-
-    # Run T-RECS
-    mm.prepare_TRECS()
-    p = mm.run_TRECS()
-    p.wait()
-
-    # Read data
-    mm.read_TRECS()
-
-    # Make map
-    mm.make_map()
-
-    # Save map
-    mm.save(map_name, override=True)
-
-    # Save chan-dim image
-    mm.save_to_fits(chan_dim=True, override=True)
-
-    # Make map-sized mask
-    _, mask_file = mm.make_threshold_mask(
-        sensitivity=5e-5, save=True, mask_size="model"
-    )
-
-    # Save masked map
-    mm.save_masked_map(mask_file)
-
-    # Make ddf-sized mask
-    mm.make_threshold_mask(sensitivity=5e-5, save=True, mask_size="ddf")
+class MapMaker_Parser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.add_argument(
+            "map_name",
+            type=str,
+            default="test_map",
+            help="Name of the map to be generated.",
+        )
+        self.add_argument(
+            "--map_size_deg",
+            type=float,
+            default=5,
+            help="Size of the map in degrees.",
+        )
+        self.add_argument(
+            "--model_name",
+            type=str,
+            default="Prototypes_Model_SizeCond",
+            help="Name of the model to be used.",
+        )
+        self.add_argument(
+            "--dset",
+            type=str,
+            default="prototypes",
+            help="Name of the dataset to be used.",
+        )
+        self.add_argument(
+            "--force_all",
+            action="store_false",
+            help="Force re-run all steps.",
+        )
+        self.add_argument(
+            "--force_trecs",
+            action="store_false",
+            help="Force re-run T-RECS.",
+        )
+        self.add_argument(
+            "--force_map",
+            action="store_false",
+            help="Force re-run map generation.",
+        )
 
 
 if __name__ == "__main__":
+    # Parse command line arguments
+    parser = MapMaker_Parser()
+    args = parser.parse_args()
 
-    # Settings
-    map_name = "map_verif_v1"
+    # Initialize MapMaker
+    mm = MapMaker(
+        map_name=args.map_name,
+        map_size_deg=args.map_size_deg,
+        model_name=args.model_name,
+        dset=args.dset,
+    )
 
     # Run MapMaker
-    run_map_maker(map_name=map_name)
+    mm.run(
+        force_all=args.force_all, force_trecs=args.force_trecs, force_map=args.force_map
+    )
