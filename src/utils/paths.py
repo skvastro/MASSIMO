@@ -9,7 +9,7 @@ from utils.logging import show_dl_progress
 BASE_PARENT = Path(__file__).parent.parent.parent
 
 # CHANGE THIS IF DESIRED:
-STORAGE_PARENT = Path("/hs/fs08/data/group-brueggen/tmartinez")
+STORAGE_PARENT = Path("/hs/fs08/data/group-brueggen/sandhya")
 
 # Three main storage folders.
 MODEL_PARENT = STORAGE_PARENT / "model_results"
