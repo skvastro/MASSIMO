@@ -64,7 +64,7 @@ def show_dl_progress(block_num, block_size, total_size):
         pbar.update(increment)
     else:
         pbar.close()
-        pbar, last_loaded = None, 0
+    pbar, last_loaded = None, 0
 
 
 def format_timedelta(dt):
